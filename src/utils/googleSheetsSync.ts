@@ -1,4 +1,5 @@
 import { Account, Budget, Transaction } from '../types/finance';
+import { DEFAULT_SHEETS_WEBAPP_URL } from '../config/defaultSheetsUrl';
 
 const KEYS = {
   WEBAPP_URL: 'dompetku_sheets_webapp_url',
@@ -7,6 +8,27 @@ const KEYS = {
   PENDING_PUSH: 'dompetku_sheets_pending_push',
   LAST_SYNCED_COUNT: 'dompetku_sheets_last_tx_count',
 };
+
+let hasPersistedToCode = false;
+
+/**
+ * Menyimpan URL ke file konfigurasi proyek (src/config/defaultSheetsUrl.ts)
+ * sehingga ketika aplikasi dibuka di perangkat lain (HP/Laptop lain atau Vercel),
+ * link spreadsheet utama langsung terhubung tanpa perlu dimasukkan ulang.
+ */
+export async function persistUrlAsPrimarySpreadsheet(cleanUrl: string): Promise<boolean> {
+  if (!cleanUrl || !cleanUrl.startsWith('https://script.google.com/')) return false;
+  try {
+    const res = await fetch('/api/set-default-sheets-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: cleanUrl }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export function hasPendingPush(): boolean {
   try {
@@ -99,9 +121,25 @@ export function normalizeSheetsUrl(rawUrl: string): {
 
 export function getSavedSheetsUrl(): string {
   try {
-    return localStorage.getItem(KEYS.WEBAPP_URL) || '';
+    const localUrl = localStorage.getItem(KEYS.WEBAPP_URL) || '';
+    const envUrl = (import.meta.env?.VITE_GOOGLE_SHEETS_URL as string) || '';
+    const activeUrl = localUrl || DEFAULT_SHEETS_WEBAPP_URL || envUrl || '';
+
+    // Jika di browser ini sudah ada URL di localStorage, namun belum terkunci di DEFAULT_SHEETS_WEBAPP_URL,
+    // otomatis kunci ke dalam kode sumber agar perangkat lain tidak perlu memasukkan link lagi!
+    if (localUrl && localUrl !== DEFAULT_SHEETS_WEBAPP_URL && !hasPersistedToCode) {
+      hasPersistedToCode = true;
+      persistUrlAsPrimarySpreadsheet(localUrl);
+    }
+
+    // Jika perangkat baru membuka aplikasi dan DEFAULT_SHEETS_WEBAPP_URL sudah ada, simpan juga ke localStorage perangkat tersebut
+    if (!localUrl && activeUrl) {
+      localStorage.setItem(KEYS.WEBAPP_URL, activeUrl);
+    }
+
+    return activeUrl;
   } catch {
-    return '';
+    return DEFAULT_SHEETS_WEBAPP_URL || '';
   }
 }
 
@@ -113,6 +151,8 @@ export function saveSheetsUrl(url: string): string {
     if (localStorage.getItem(KEYS.AUTO_SYNC) === null) {
       localStorage.setItem(KEYS.AUTO_SYNC, 'true');
     }
+    // Kunci permanen sebagai Spreadsheet Utama untuk semua perangkat
+    persistUrlAsPrimarySpreadsheet(cleanUrl);
     return cleanUrl;
   } catch (err) {
     console.error('Failed to save Google Sheets URL:', err);

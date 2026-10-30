@@ -105,18 +105,6 @@ export default function App() {
     setIsSheetsConnected(!!getSavedSheetsUrl());
   }, [isGoogleSheetsModalOpen]);
 
-  // Nol-kan seluruh data awal agar mulai dari nol (0) bersih
-  useEffect(() => {
-    const hasCleaned = localStorage.getItem('dompetku_cleaned_to_zero_v3');
-    if (!hasCleaned) {
-      localStorage.setItem('dompetku_cleaned_to_zero_v3', 'true');
-      const { accounts: zeroAcc } = zeroOutAllData();
-      setAccounts(zeroAcc);
-      setTransactions([]);
-      setBudgets([]);
-    }
-  }, []);
-
   // Sync with LocalStorage
   useEffect(() => {
     saveStoredAccounts(accounts);

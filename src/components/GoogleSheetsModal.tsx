@@ -623,11 +623,13 @@ function createJsonResponse(obj) {
                   )}
                   <div>
                     <span className="text-xs font-bold block">
-                      {isConnected ? 'URL Google Sheets Terkonfigurasi' : 'Belum Terhubung ke Google Sheets'}
+                      {isConnected
+                        ? 'Spreadsheet Utama Aktif Permanen (Semua Perangkat)'
+                        : 'Belum Terhubung ke Google Sheets'}
                     </span>
                     <p className="text-[11px] text-slate-600 mt-0.5">
                       {isConnected
-                        ? 'DompetKu siap mengirim dan mencadangkan data transaksi Anda ke Google Sheets.'
+                        ? 'Link spreadsheet ini telah dikunci sebagai Spreadsheet Utama. Saat Anda membuka aplikasi dari HP atau laptop lain, data langsung terhubung otomatis tanpa perlu memasukkan link lagi.'
                         : 'Salin skrip di tab sebelah, pasang di Google Sheets Anda, lalu tempelkan URL Web App di bawah ini.'}
                     </p>
                   </div>
@@ -644,7 +646,7 @@ function createJsonResponse(obj) {
               {/* Input URL Web App */}
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-slate-700 block">
-                  URL Aplikasi Web Google Apps Script (*.exec):
+                  URL Spreadsheet Utama Google Apps Script (*.exec):
                 </label>
                 <div className="flex gap-2">
                   <input
@@ -667,13 +669,13 @@ function createJsonResponse(obj) {
                     ) : (
                       <>
                         <Check className="w-3.5 h-3.5" />
-                        <span>Simpan & Tes</span>
+                        <span>Kunci Spreadsheet Utama</span>
                       </>
                     )}
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Dapatkan URL ini setelah klik <em>Deploy &gt; Deployment baru &gt; Aplikasi Web</em> di Google Sheets Anda.
+                  Begitu diklik <strong>Kunci Spreadsheet Utama</strong>, link ini otomatis tertanam permanen di dalam kode aplikasi (<code>src/config/defaultSheetsUrl.ts</code>) sehingga otomatis aktif di semua HP &amp; laptop.
                 </p>
 
                 {/* Notifikasi Perbaikan Otomatis URL */}

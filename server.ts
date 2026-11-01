@@ -9,6 +9,8 @@ const __dirname = path.dirname(__filename);
 
 const DB_FILE_PATH = path.resolve(__dirname, 'src/config/serverDatabase.json');
 const DEFAULT_URL_FILE_PATH = path.resolve(__dirname, 'src/config/defaultSheetsUrl.ts');
+const LOCKED_PRIMARY_SHEETS_URL =
+  'https://script.google.com/macros/s/AKfycbwOx_f2K6knBpth1X1GHjgh1ewn6eUl3OS2Gm7cl8R_VwcdvChBp7z7jIl8wFwMeGOypg/exec';
 
 interface ServerDatabaseState {
   sheetsUrl: string;
@@ -19,7 +21,7 @@ interface ServerDatabaseState {
 }
 
 const DEFAULT_DB_STATE: ServerDatabaseState = {
-  sheetsUrl: '',
+  sheetsUrl: LOCKED_PRIMARY_SHEETS_URL,
   accounts: [
     {
       id: 'acc_cash',
@@ -44,14 +46,55 @@ const DEFAULT_DB_STATE: ServerDatabaseState = {
   updatedAt: 0,
 };
 
+function normalizeServerAccounts(rawAccounts: any[]): any[] {
+  if (!Array.isArray(rawAccounts) || rawAccounts.length === 0) {
+    return DEFAULT_DB_STATE.accounts;
+  }
+  let cashBal = 0;
+  let bankBal = 0;
+  for (const a of rawAccounts) {
+    const id = String(a?.id || '').toLowerCase();
+    const name = String(a?.name || '').toLowerCase();
+    const type = String(a?.type || '').toLowerCase();
+    const bal = typeof a?.initialBalance === 'number' ? a.initialBalance : Number(a?.initialBalance) || 0;
+    if (id === 'acc_cash' || type === 'cash' || name.includes('tunai') || name.includes('dompet') || name.includes('kas')) {
+      cashBal += bal;
+    } else {
+      bankBal += bal;
+    }
+  }
+  return [
+    {
+      id: 'acc_cash',
+      name: 'Dompet Tunai',
+      type: 'cash',
+      initialBalance: cashBal,
+      color: '#10B981',
+      icon: 'Wallet',
+    },
+    {
+      id: 'acc_bca',
+      name: 'Rekening',
+      type: 'bank',
+      accountNumber: '-',
+      initialBalance: bankBal,
+      color: '#2563EB',
+      icon: 'Building2',
+    },
+  ];
+}
+
 function readServerDb(): ServerDatabaseState {
   try {
     if (fs.existsSync(DB_FILE_PATH)) {
       const raw = fs.readFileSync(DB_FILE_PATH, 'utf-8');
       const parsed = JSON.parse(raw);
       return {
-        sheetsUrl: typeof parsed.sheetsUrl === 'string' ? parsed.sheetsUrl : '',
-        accounts: Array.isArray(parsed.accounts) && parsed.accounts.length > 0 ? parsed.accounts : DEFAULT_DB_STATE.accounts,
+        sheetsUrl:
+          typeof parsed.sheetsUrl === 'string' && parsed.sheetsUrl.trim()
+            ? parsed.sheetsUrl.trim()
+            : LOCKED_PRIMARY_SHEETS_URL,
+        accounts: normalizeServerAccounts(parsed.accounts),
         transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
         budgets: Array.isArray(parsed.budgets) ? parsed.budgets : [],
         updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
@@ -86,7 +129,7 @@ async function startServer() {
 
   app.use(express.json({ limit: '5mb' }));
 
-  // 1. Endpoint GET /api/state: Mengambil seluruh data terpusat agar semua perangkat (HP & Laptop) memiliki data yang 100% sama
+  // 1. Endpoint GET /api/state: Mengambil seluruh data terpusat agar semua perangkat (HP & Laptop) memiliki data & link spreadsheet yang 100% sama
   app.get('/api/state', (_req, res) => {
     const state = readServerDb();
     res.json({ ok: true, state });
@@ -97,20 +140,33 @@ async function startServer() {
     try {
       const current = readServerDb();
       const body = req.body || {};
+      const forceEmpty = body.forceEmpty === true;
+
+      const incomingTxs = Array.isArray(body.transactions) ? body.transactions : null;
+      let nextTransactions = current.transactions;
+
+      if (incomingTxs !== null) {
+        if (incomingTxs.length > 0 || forceEmpty) {
+          nextTransactions = incomingTxs;
+        }
+      }
+
+      const hasRealDataChange =
+        nextTransactions.length > 0 ||
+        forceEmpty ||
+        current.updatedAt > 0;
+
       const nextState: ServerDatabaseState = {
         sheetsUrl:
           typeof body.sheetsUrl === 'string' && body.sheetsUrl.trim()
             ? body.sheetsUrl.trim()
-            : current.sheetsUrl,
-        accounts:
-          Array.isArray(body.accounts) && body.accounts.length > 0
-            ? body.accounts
-            : current.accounts,
-        transactions: Array.isArray(body.transactions)
-          ? body.transactions
-          : current.transactions,
+            : current.sheetsUrl || LOCKED_PRIMARY_SHEETS_URL,
+        accounts: Array.isArray(body.accounts)
+          ? normalizeServerAccounts(body.accounts)
+          : current.accounts,
+        transactions: nextTransactions,
         budgets: Array.isArray(body.budgets) ? body.budgets : current.budgets,
-        updatedAt: Date.now(),
+        updatedAt: hasRealDataChange ? Date.now() : 0,
       };
       writeServerDb(nextState);
       res.json({ ok: true, state: nextState });
@@ -128,7 +184,6 @@ async function startServer() {
         const nextState: ServerDatabaseState = {
           ...current,
           sheetsUrl: url.trim(),
-          updatedAt: Date.now(),
         };
         writeServerDb(nextState);
       }

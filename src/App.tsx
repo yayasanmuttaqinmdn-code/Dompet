@@ -135,6 +135,7 @@ export default function App() {
           transactions: nextTx,
           accounts: nextAcc,
           budgets: nextBg,
+          forceEmpty: nextTx.length === 0,
         });
         if (savedServer && savedServer.updatedAt) {
           lastServerUpdatedAtRef.current = savedServer.updatedAt;
@@ -190,49 +191,52 @@ export default function App() {
 
     setIsAutoSyncingBg(true);
     try {
-      // TAHAP 1: Cek Server Pusat (/api/state) agar semua perangkat (HP/Laptop) otomatis 1 server
+      // TAHAP 1: Cek Server Pusat (/api/state) agar semua perangkat (HP/Laptop) otomatis menggunakan 1 Spreadsheet Utama & data yang sama
       const serverState = await fetchCentralServerState();
       let activeSheetsUrl = getSavedSheetsUrl();
 
       if (serverState) {
-        // Jika Server Pusat masih kosong (updatedAt === 0) tetapi perangkat ini sudah punya data / URL Sheets,
-        // unggah data perangkat ini ke Server Pusat agar perangkat lain langsung mendapatkannya!
-        if (
-          serverState.updatedAt === 0 &&
-          (transactionsRef.current.length > 0 || activeSheetsUrl)
-        ) {
+        // Pastikan URL Spreadsheet Utama dari Server Pusat selalu disamakan ke perangkat ini
+        if (serverState.sheetsUrl && serverState.sheetsUrl !== activeSheetsUrl) {
+          saveSheetsUrl(serverState.sheetsUrl);
+          activeSheetsUrl = serverState.sheetsUrl;
+          setIsSheetsConnected(true);
+        } else if (activeSheetsUrl) {
+          setIsSheetsConnected(true);
+        }
+
+        const serverTxs = serverState.transactions || [];
+        const localTxs = transactionsRef.current;
+
+        // Jika Server Pusat belum punya transaksi tetapi perangkat ini punya transaksi, unggah ke Server Pusat & Google Sheets!
+        if (serverState.updatedAt === 0 && localTxs.length > 0) {
           const uploaded = await saveCentralServerState({
             sheetsUrl: activeSheetsUrl || undefined,
-            transactions: transactionsRef.current,
+            transactions: localTxs,
             accounts: accountsRef.current,
             budgets: budgetsRef.current,
           });
           if (uploaded?.updatedAt) {
             lastServerUpdatedAtRef.current = uploaded.updatedAt;
           }
-        } else if (serverState.updatedAt > 0) {
-          // Jika Server Pusat memiliki URL Spreadsheet Utama dan perangkat ini belum punya, otomatis pakai!
-          if (serverState.sheetsUrl && serverState.sheetsUrl !== activeSheetsUrl) {
-            saveSheetsUrl(serverState.sheetsUrl);
-            activeSheetsUrl = serverState.sheetsUrl;
-            setIsSheetsConnected(true);
+          if (activeSheetsUrl && isAutoSyncEnabled()) {
+            await syncAllToGoogleSheets(activeSheetsUrl, {
+              transactions: localTxs,
+              accounts: accountsRef.current,
+              budgets: budgetsRef.current,
+            });
           }
-          // Jika data di Server Pusat lebih baru daripada yang terakhir disinkronkan di perangkat ini
-          if (
-            serverState.updatedAt > lastServerUpdatedAtRef.current &&
-            Date.now() - lastLocalChangeRef.current >= 5000
-          ) {
-            lastServerUpdatedAtRef.current = serverState.updatedAt;
-            handleUpdateFromSheets(
-              serverState.transactions || [],
-              serverState.accounts,
-              serverState.budgets
-            );
-          }
+        } else if (
+          serverState.updatedAt > 0 &&
+          serverState.updatedAt > lastServerUpdatedAtRef.current &&
+          Date.now() - lastLocalChangeRef.current >= 5000
+        ) {
+          lastServerUpdatedAtRef.current = serverState.updatedAt;
+          handleUpdateFromSheets(serverTxs, serverState.accounts, serverState.budgets);
         }
       }
 
-      // TAHAP 2: Sinkronisasi dengan Google Sheets (jika URL Spreadsheet Utama sudah diatur)
+      // TAHAP 2: Sinkronisasi dengan Google Sheets
       if (!activeSheetsUrl || !isAutoSyncEnabled()) return;
 
       if (hasPendingPush()) {
@@ -250,18 +254,16 @@ export default function App() {
         const sheetTxs = res.transactions || [];
         const localTxs = transactionsRef.current;
 
-        // Jika di aplikasi ada transaksi tetapi di spreadsheet masih kosong, otomatis kirim ke spreadsheet!
         if (sheetTxs.length === 0 && localTxs.length > 0 && getLastSyncedTxCount() === 0) {
           await syncAllToGoogleSheets(activeSheetsUrl, {
             transactions: localTxs,
             accounts: accountsRef.current,
             budgets: budgetsRef.current,
           });
-        } else {
+        } else if (sheetTxs.length > 0 || localTxs.length === 0) {
           const changed = JSON.stringify(localTxs) !== JSON.stringify(sheetTxs);
           handleUpdateFromSheets(sheetTxs, res.accounts, res.budgets);
-          // Jika ada perubahan dari Google Sheets, perbarui juga Server Pusat agar semua perangkat sinkron
-          if (changed) {
+          if (changed && sheetTxs.length > 0) {
             const saved = await saveCentralServerState({
               sheetsUrl: activeSheetsUrl,
               transactions: sheetTxs,

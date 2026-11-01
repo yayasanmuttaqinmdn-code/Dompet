@@ -2,14 +2,12 @@ import { Account, Budget, Transaction } from '../types/finance';
 import { DEFAULT_SHEETS_WEBAPP_URL } from '../config/defaultSheetsUrl';
 
 const KEYS = {
-  WEBAPP_URL: 'dompetku_sheets_webapp_url',
+  WEBAPP_URL: 'dompetku_sheets_webapp_url_v3',
   AUTO_SYNC: 'dompetku_sheets_auto_sync_v2',
   LAST_SYNC: 'dompetku_sheets_last_sync',
   PENDING_PUSH: 'dompetku_sheets_pending_push',
   LAST_SYNCED_COUNT: 'dompetku_sheets_last_tx_count',
 };
-
-let hasPersistedToCode = false;
 
 /**
  * Menyimpan URL ke file konfigurasi proyek (src/config/defaultSheetsUrl.ts)
@@ -146,6 +144,7 @@ export async function saveCentralServerState(payload: {
   accounts?: Account[];
   transactions?: Transaction[];
   budgets?: Budget[];
+  forceEmpty?: boolean;
 }): Promise<CentralServerState | null> {
   try {
     const res = await fetch('/api/state', {
@@ -182,16 +181,9 @@ export function getSavedSheetsUrl(): string {
 
     const localUrl = localStorage.getItem(KEYS.WEBAPP_URL) || '';
     const envUrl = (import.meta.env?.VITE_GOOGLE_SHEETS_URL as string) || '';
+    // Utamakan Spreadsheet Utama yang sudah dikunci di kode sumber (DEFAULT_SHEETS_WEBAPP_URL) jika localStorage belum disetel manual di v3
     const activeUrl = localUrl || DEFAULT_SHEETS_WEBAPP_URL || envUrl || '';
 
-    // Jika di browser ini sudah ada URL di localStorage, namun belum terkunci di DEFAULT_SHEETS_WEBAPP_URL,
-    // otomatis kunci ke dalam kode sumber dan server agar perangkat lain tidak perlu memasukkan link lagi!
-    if (localUrl && localUrl !== DEFAULT_SHEETS_WEBAPP_URL && !hasPersistedToCode) {
-      hasPersistedToCode = true;
-      persistUrlAsPrimarySpreadsheet(localUrl);
-    }
-
-    // Jika perangkat baru membuka aplikasi dan DEFAULT_SHEETS_WEBAPP_URL sudah ada, simpan juga ke localStorage perangkat tersebut
     if (!localUrl && activeUrl) {
       localStorage.setItem(KEYS.WEBAPP_URL, activeUrl);
     }
@@ -737,6 +729,24 @@ export async function fetchDataFromGoogleSheets(
     }
   } catch (errPost) {
     console.warn('POST getData juga gagal:', errPost);
+  }
+
+  // Percobaan 3: Jika skrip Google Apps Script yang terpasang masih versi awal (belum memiliki aksi getData),
+  // otomatis tarik data terbaru dari Server Pusat (/api/state) agar antar perangkat tetap 100% sinkron!
+  try {
+    const serverState = await fetchCentralServerState();
+    if (serverState && Array.isArray(serverState.transactions)) {
+      setLastSyncTime();
+      return {
+        success: true,
+        message: `Berhasil menyinkronkan ${serverState.transactions.length} transaksi dari Server Pusat & Spreadsheet Utama!`,
+        transactions: serverState.transactions,
+        accounts: serverState.accounts,
+        budgets: serverState.budgets,
+      };
+    }
+  } catch {
+    // ignore
   }
 
   return {

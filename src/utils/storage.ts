@@ -350,15 +350,14 @@ export function getStoredAccounts(): Account[] {
     const raw = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
     if (raw) {
       const parsed: Account[] = JSON.parse(raw);
-      // Jika masih menyimpan akun default lama (4 akun atau nama lama), rapikan menjadi 2 pilihan: Dompet Tunai & Rekening
-      const hasLegacyDefaults = parsed.some(
-        (a) =>
-          a.id === 'acc_mandiri' ||
-          a.id === 'acc_ewallet' ||
-          a.name.includes('Dompet Tunai (Kas)') ||
-          a.name.includes('Bank BCA (Rekening)')
-      );
-      if (hasLegacyDefaults) {
+      const isCleanTwoAccounts =
+        parsed.length === 2 &&
+        parsed[0]?.id === 'acc_cash' &&
+        parsed[0]?.name === 'Dompet Tunai' &&
+        parsed[1]?.id === 'acc_bca' &&
+        parsed[1]?.name === 'Rekening';
+
+      if (!isCleanTwoAccounts) {
         const cleaned = normalizeToTwoAccounts(parsed);
         saveStoredAccounts(cleaned);
         return cleaned;

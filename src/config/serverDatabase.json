@@ -1,0 +1,25 @@
+{
+  "sheetsUrl": "",
+  "accounts": [
+    {
+      "id": "acc_cash",
+      "name": "Dompet Tunai",
+      "type": "cash",
+      "initialBalance": 0,
+      "color": "#10B981",
+      "icon": "Wallet"
+    },
+    {
+      "id": "acc_bca",
+      "name": "Rekening",
+      "type": "bank",
+      "accountNumber": "-",
+      "initialBalance": 0,
+      "color": "#2563EB",
+      "icon": "Building2"
+    }
+  ],
+  "transactions": [],
+  "budgets": [],
+  "updatedAt": 0
+}

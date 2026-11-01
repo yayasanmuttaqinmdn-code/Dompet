@@ -28,6 +28,7 @@ import { AccountManagerModal } from './components/AccountManagerModal';
 import { GoogleSheetsModal } from './components/GoogleSheetsModal';
 import {
   getSavedSheetsUrl,
+  saveSheetsUrl,
   isAutoSyncEnabled,
   removeTransactionFromSheets,
   syncAllToGoogleSheets,
@@ -36,6 +37,8 @@ import {
   setPendingPush,
   getLastSyncedTxCount,
   setLastSyncedTxCount,
+  fetchCentralServerState,
+  saveCentralServerState,
 } from './utils/googleSheetsSync';
 import { RotateCcw, ShieldCheck, Menu, Wifi, CheckCircle2, FileSpreadsheet, Laptop, Smartphone, RefreshCw } from 'lucide-react';
 
@@ -65,6 +68,7 @@ export default function App() {
 
   // Track timestamp of last local change & latest state refs so background polling never overwrites local edits
   const lastLocalChangeRef = useRef<number>(0);
+  const lastServerUpdatedAtRef = useRef<number>(0);
   const transactionsRef = useRef<Transaction[]>(transactions);
   const accountsRef = useRef<Account[]>(accounts);
   const budgetsRef = useRef<Budget[]>(budgets);
@@ -118,20 +122,33 @@ export default function App() {
     saveStoredBudgets(budgets);
   }, [budgets]);
 
-  // Helper untuk kirim seluruh state ke Google Sheets di latar belakang (menggunakan syncAll yang didukung semua versi skrip)
+  // Helper untuk kirim seluruh state ke Server Pusat (/api/state) & Google Sheets di latar belakang
   const pushFullStateToSheets = useCallback(
     async (nextTx: Transaction[], nextAcc: Account[], nextBg: Budget[]) => {
-      const sheetsUrl = getSavedSheetsUrl();
-      if (!sheetsUrl || !isAutoSyncEnabled()) return;
       lastLocalChangeRef.current = Date.now();
-      setPendingPush(true);
+      const sheetsUrl = getSavedSheetsUrl();
       setIsAutoSyncingBg(true);
       try {
-        await syncAllToGoogleSheets(sheetsUrl, {
+        // 1. Selalu simpan ke Server Pusat (/api/state) agar semua perangkat langsung memiliki data yang sama
+        const savedServer = await saveCentralServerState({
+          sheetsUrl: sheetsUrl || undefined,
           transactions: nextTx,
           accounts: nextAcc,
           budgets: nextBg,
         });
+        if (savedServer && savedServer.updatedAt) {
+          lastServerUpdatedAtRef.current = savedServer.updatedAt;
+        }
+
+        // 2. Jika terhubung ke Google Sheets, sinkronkan penuh ke Google Sheets
+        if (sheetsUrl && isAutoSyncEnabled()) {
+          setPendingPush(true);
+          await syncAllToGoogleSheets(sheetsUrl, {
+            transactions: nextTx,
+            accounts: nextAcc,
+            budgets: nextBg,
+          });
+        }
       } finally {
         setIsAutoSyncingBg(false);
       }
@@ -139,7 +156,7 @@ export default function App() {
     []
   );
 
-  // Sinkronisasi data saat ditarik dari Google Sheets (Pull manual maupun otomatis)
+  // Sinkronisasi data saat ditarik dari Server Pusat / Google Sheets (Pull manual maupun otomatis)
   const handleUpdateFromSheets = useCallback(
     (newTransactions: Transaction[], newAccounts?: Account[], newBudgets?: Budget[]) => {
       setLastSyncedTxCount(newTransactions.length);
@@ -166,18 +183,60 @@ export default function App() {
     []
   );
 
-  // Sinkronisasi Dua Arah Otomatis (saat aplikasi dibuka, saat pindah tab/fokus, & tiap 10 detik)
+  // Sinkronisasi Dua Arah Otomatis Antar Perangkat (Server Pusat /api/state + Google Sheets)
   const pullFromSheetsQuietly = useCallback(async () => {
-    const sheetsUrl = getSavedSheetsUrl();
-    if (!sheetsUrl || !isAutoSyncEnabled()) return;
-    // Jangan timpa jika pengguna baru saja mengubah sesuatu di aplikasi dalam 6 detik terakhir
-    if (Date.now() - lastLocalChangeRef.current < 6000) return;
+    // Jangan timpa jika pengguna baru saja mengubah sesuatu di perangkat ini dalam 5 detik terakhir
+    if (Date.now() - lastLocalChangeRef.current < 5000) return;
 
     setIsAutoSyncingBg(true);
     try {
-      // Jika ada perubahan lokal yang belum sempat terkirim ke Google Sheets, kirim sekarang!
+      // TAHAP 1: Cek Server Pusat (/api/state) agar semua perangkat (HP/Laptop) otomatis 1 server
+      const serverState = await fetchCentralServerState();
+      let activeSheetsUrl = getSavedSheetsUrl();
+
+      if (serverState) {
+        // Jika Server Pusat masih kosong (updatedAt === 0) tetapi perangkat ini sudah punya data / URL Sheets,
+        // unggah data perangkat ini ke Server Pusat agar perangkat lain langsung mendapatkannya!
+        if (
+          serverState.updatedAt === 0 &&
+          (transactionsRef.current.length > 0 || activeSheetsUrl)
+        ) {
+          const uploaded = await saveCentralServerState({
+            sheetsUrl: activeSheetsUrl || undefined,
+            transactions: transactionsRef.current,
+            accounts: accountsRef.current,
+            budgets: budgetsRef.current,
+          });
+          if (uploaded?.updatedAt) {
+            lastServerUpdatedAtRef.current = uploaded.updatedAt;
+          }
+        } else if (serverState.updatedAt > 0) {
+          // Jika Server Pusat memiliki URL Spreadsheet Utama dan perangkat ini belum punya, otomatis pakai!
+          if (serverState.sheetsUrl && serverState.sheetsUrl !== activeSheetsUrl) {
+            saveSheetsUrl(serverState.sheetsUrl);
+            activeSheetsUrl = serverState.sheetsUrl;
+            setIsSheetsConnected(true);
+          }
+          // Jika data di Server Pusat lebih baru daripada yang terakhir disinkronkan di perangkat ini
+          if (
+            serverState.updatedAt > lastServerUpdatedAtRef.current &&
+            Date.now() - lastLocalChangeRef.current >= 5000
+          ) {
+            lastServerUpdatedAtRef.current = serverState.updatedAt;
+            handleUpdateFromSheets(
+              serverState.transactions || [],
+              serverState.accounts,
+              serverState.budgets
+            );
+          }
+        }
+      }
+
+      // TAHAP 2: Sinkronisasi dengan Google Sheets (jika URL Spreadsheet Utama sudah diatur)
+      if (!activeSheetsUrl || !isAutoSyncEnabled()) return;
+
       if (hasPendingPush()) {
-        await syncAllToGoogleSheets(sheetsUrl, {
+        await syncAllToGoogleSheets(activeSheetsUrl, {
           transactions: transactionsRef.current,
           accounts: accountsRef.current,
           budgets: budgetsRef.current,
@@ -186,25 +245,37 @@ export default function App() {
         return;
       }
 
-      const res = await fetchDataFromGoogleSheets(sheetsUrl);
-      if (res.success && Date.now() - lastLocalChangeRef.current >= 6000) {
+      const res = await fetchDataFromGoogleSheets(activeSheetsUrl);
+      if (res.success && Date.now() - lastLocalChangeRef.current >= 5000) {
         const sheetTxs = res.transactions || [];
         const localTxs = transactionsRef.current;
 
-        // Jika di aplikasi ada transaksi tetapi di spreadsheet masih kosong (belum pernah terkirim), otomatis kirim ke spreadsheet!
+        // Jika di aplikasi ada transaksi tetapi di spreadsheet masih kosong, otomatis kirim ke spreadsheet!
         if (sheetTxs.length === 0 && localTxs.length > 0 && getLastSyncedTxCount() === 0) {
-          await syncAllToGoogleSheets(sheetsUrl, {
+          await syncAllToGoogleSheets(activeSheetsUrl, {
             transactions: localTxs,
             accounts: accountsRef.current,
             budgets: budgetsRef.current,
           });
         } else {
+          const changed = JSON.stringify(localTxs) !== JSON.stringify(sheetTxs);
           handleUpdateFromSheets(sheetTxs, res.accounts, res.budgets);
+          // Jika ada perubahan dari Google Sheets, perbarui juga Server Pusat agar semua perangkat sinkron
+          if (changed) {
+            const saved = await saveCentralServerState({
+              sheetsUrl: activeSheetsUrl,
+              transactions: sheetTxs,
+              accounts: res.accounts || accountsRef.current,
+              budgets: res.budgets || budgetsRef.current,
+            });
+            if (saved?.updatedAt) {
+              lastServerUpdatedAtRef.current = saved.updatedAt;
+            }
+          }
         }
         setIsSheetsConnected(true);
       } else if (!res.success && transactionsRef.current.length > 0 && getLastSyncedTxCount() !== transactionsRef.current.length) {
-        // Jika skrip versi lama di spreadsheet belum mendukung getData, pastikan data lokal otomatis dikirim via syncAll
-        await syncAllToGoogleSheets(sheetsUrl, {
+        await syncAllToGoogleSheets(activeSheetsUrl, {
           transactions: transactionsRef.current,
           accounts: accountsRef.current,
           budgets: budgetsRef.current,
@@ -234,7 +305,7 @@ export default function App() {
 
     const intervalId = window.setInterval(() => {
       pullFromSheetsQuietly();
-    }, 10000);
+    }, 4000);
 
     return () => {
       window.removeEventListener('focus', handleFocus);

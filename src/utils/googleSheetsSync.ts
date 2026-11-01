@@ -119,14 +119,73 @@ export function normalizeSheetsUrl(rawUrl: string): {
   return { url, autoFixed, fixNote };
 }
 
+export interface CentralServerState {
+  sheetsUrl: string;
+  accounts: Account[];
+  transactions: Transaction[];
+  budgets: Budget[];
+  updatedAt: number;
+}
+
+export async function fetchCentralServerState(): Promise<CentralServerState | null> {
+  try {
+    const res = await fetch(`/api/state?_t=${Date.now()}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.ok && data.state) {
+      return data.state as CentralServerState;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCentralServerState(payload: {
+  sheetsUrl?: string;
+  accounts?: Account[];
+  transactions?: Transaction[];
+  budgets?: Budget[];
+}): Promise<CentralServerState | null> {
+  try {
+    const res = await fetch('/api/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.ok && data.state) {
+      return data.state as CentralServerState;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function getSavedSheetsUrl(): string {
   try {
+    // 0. Cek apakah ada parameter ?sheets= pada URL browser (untuk tautan cepat lintas perangkat)
+    if (typeof window !== 'undefined' && window.location.search) {
+      const params = new URLSearchParams(window.location.search);
+      const urlParam = params.get('sheets');
+      if (urlParam && urlParam.startsWith('https://script.google.com/')) {
+        const { url: cleanParamUrl } = normalizeSheetsUrl(urlParam);
+        localStorage.setItem(KEYS.WEBAPP_URL, cleanParamUrl);
+        params.delete('sheets');
+        const newSearch = params.toString();
+        const nextHref = `${window.location.pathname}${newSearch ? `?${newSearch}` : ''}${window.location.hash}`;
+        window.history.replaceState({}, '', nextHref);
+      }
+    }
+
     const localUrl = localStorage.getItem(KEYS.WEBAPP_URL) || '';
     const envUrl = (import.meta.env?.VITE_GOOGLE_SHEETS_URL as string) || '';
     const activeUrl = localUrl || DEFAULT_SHEETS_WEBAPP_URL || envUrl || '';
 
     // Jika di browser ini sudah ada URL di localStorage, namun belum terkunci di DEFAULT_SHEETS_WEBAPP_URL,
-    // otomatis kunci ke dalam kode sumber agar perangkat lain tidak perlu memasukkan link lagi!
+    // otomatis kunci ke dalam kode sumber dan server agar perangkat lain tidak perlu memasukkan link lagi!
     if (localUrl && localUrl !== DEFAULT_SHEETS_WEBAPP_URL && !hasPersistedToCode) {
       hasPersistedToCode = true;
       persistUrlAsPrimarySpreadsheet(localUrl);

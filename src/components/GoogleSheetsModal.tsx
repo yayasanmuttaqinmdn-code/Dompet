@@ -25,6 +25,7 @@ import {
   syncAllToGoogleSheets,
   fetchDataFromGoogleSheets,
   getLastSyncTime,
+  saveCentralServerState,
 } from '../utils/googleSheetsSync';
 
 interface GoogleSheetsModalProps {
@@ -50,6 +51,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   const [url, setUrl] = useState('');
   const [autoSync, setAutoSync] = useState(true);
   const [isCopied, setIsCopied] = useState(false);
+  const [isDeviceLinkCopied, setIsDeviceLinkCopied] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
@@ -476,9 +478,21 @@ function createJsonResponse(obj) {
         if (onUpdateFromSheets) {
           onUpdateFromSheets(pullRes.transactions, pullRes.accounts, pullRes.budgets);
         }
+        await saveCentralServerState({
+          sheetsUrl: res.normalizedUrl,
+          transactions: pullRes.transactions,
+          accounts: pullRes.accounts || accounts,
+          budgets: pullRes.budgets || budgets,
+        });
         setLastSync(new Date().toISOString());
       } else {
         await syncAllToGoogleSheets(res.normalizedUrl, {
+          transactions,
+          accounts,
+          budgets,
+        });
+        await saveCentralServerState({
+          sheetsUrl: res.normalizedUrl,
           transactions,
           accounts,
           budgets,
@@ -497,6 +511,13 @@ function createJsonResponse(obj) {
 
     setIsSyncing(true);
     setSyncResult(null);
+
+    await saveCentralServerState({
+      sheetsUrl: activeUrl,
+      transactions,
+      accounts,
+      budgets,
+    });
 
     const res = await syncAllToGoogleSheets(activeUrl, {
       transactions,
@@ -530,9 +551,24 @@ function createJsonResponse(obj) {
       if (onUpdateFromSheets) {
         onUpdateFromSheets(res.transactions, res.accounts, res.budgets);
       }
+      await saveCentralServerState({
+        sheetsUrl: activeUrl,
+        transactions: res.transactions,
+        accounts: res.accounts || accounts,
+        budgets: res.budgets || budgets,
+      });
       setLastSync(new Date().toISOString());
       if (onSyncSuccess) onSyncSuccess();
     }
+  };
+
+  const handleCopyDeviceLink = () => {
+    const activeUrl = url.trim() || getSavedSheetsUrl();
+    if (!activeUrl) return;
+    const shareUrl = `${window.location.origin}${window.location.pathname}?sheets=${encodeURIComponent(activeUrl)}`;
+    navigator.clipboard.writeText(shareUrl);
+    setIsDeviceLinkCopied(true);
+    setTimeout(() => setIsDeviceLinkCopied(false), 3000);
   };
 
   const handleToggleAutoSync = (enabled: boolean) => {
@@ -675,8 +711,34 @@ function createJsonResponse(obj) {
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Begitu diklik <strong>Kunci Spreadsheet Utama</strong>, link ini otomatis tertanam permanen di dalam kode aplikasi (<code>src/config/defaultSheetsUrl.ts</code>) sehingga otomatis aktif di semua HP &amp; laptop.
+                  Begitu diklik <strong>Kunci Spreadsheet Utama</strong>, link &amp; data ini otomatis disimpan ke <strong>Server Pusat</strong> dan <code>src/config/defaultSheetsUrl.ts</code> sehingga semua perangkat (HP &amp; laptop) langsung menampilkan data yang sama.
                 </p>
+
+                {isConnected && (
+                  <div className="p-3 rounded-xl bg-sky-50 border border-sky-200 flex flex-wrap items-center justify-between gap-2 mt-2">
+                    <div className="text-[11px] text-slate-700">
+                      <span className="font-bold text-[#024a77] block">Buka di HP / Perangkat Lain (1 Klik Sinkron):</span>
+                      <span>Salin link khusus ini ke WhatsApp/HP Anda jika membuka via Vercel tanpa GitHub push ulang.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyDeviceLink}
+                      className="px-3 py-1.5 rounded-lg bg-[#024a77] hover:bg-[#035b91] text-white text-[11px] font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
+                    >
+                      {isDeviceLinkCopied ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Link Disalin!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Salin Link Perangkat Lain</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
 
                 {/* Notifikasi Perbaikan Otomatis URL */}
                 {fixNotification && (

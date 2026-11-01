@@ -1,9 +1,10 @@
 import { Account, Budget, Transaction } from '../types/finance';
+import serverDb from '../config/serverDatabase.json';
 
 const STORAGE_KEYS = {
-  ACCOUNTS: 'dompetku_accounts_v2',
-  TRANSACTIONS: 'dompetku_transactions_v2',
-  BUDGETS: 'dompetku_budgets_v2',
+  ACCOUNTS: 'dompetku_accounts_v3',
+  TRANSACTIONS: 'dompetku_transactions_v3',
+  BUDGETS: 'dompetku_budgets_v3',
 };
 
 export const INITIAL_ACCOUNTS: Account[] = [
@@ -26,7 +27,7 @@ export const INITIAL_ACCOUNTS: Account[] = [
   },
 ];
 
-export const INITIAL_TRANSACTIONS: Transaction[] = [];
+export const INITIAL_TRANSACTIONS: Transaction[] = (serverDb.transactions as Transaction[]) || [];
 
 export const SAMPLE_ACCOUNTS: Account[] = [
   {
@@ -303,6 +304,9 @@ export function zeroOutAllData(): { accounts: Account[]; transactions: Transacti
     localStorage.removeItem(STORAGE_KEYS.ACCOUNTS);
     localStorage.removeItem(STORAGE_KEYS.TRANSACTIONS);
     localStorage.removeItem(STORAGE_KEYS.BUDGETS);
+    localStorage.removeItem('dompetku_accounts_v2');
+    localStorage.removeItem('dompetku_transactions_v2');
+    localStorage.removeItem('dompetku_budgets_v2');
     localStorage.removeItem('dompetku_accounts_v1');
     localStorage.removeItem('dompetku_transactions_v1');
     localStorage.removeItem('dompetku_budgets_v1');
@@ -382,7 +386,27 @@ export function saveStoredAccounts(accounts: Account[]): void {
 export function getStoredTransactions(): Transaction[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed: Transaction[] = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+    // Cek apabila ada transaksi lama di v2 dan gabungkan dengan INITIAL_TRANSACTIONS (dari Server Pusat)
+    const rawV2 = localStorage.getItem('dompetku_transactions_v2');
+    if (rawV2) {
+      const parsedV2: Transaction[] = JSON.parse(rawV2);
+      if (Array.isArray(parsedV2) && parsedV2.length > 0) {
+        const map = new Map<string, Transaction>();
+        for (const t of INITIAL_TRANSACTIONS) map.set(t.id, t);
+        for (const t of parsedV2) {
+          if (!map.has(t.id)) map.set(t.id, t);
+        }
+        const merged = Array.from(map.values());
+        saveStoredTransactions(merged);
+        return merged;
+      }
+    }
   } catch (e) {
     console.error('Failed to read transactions from localStorage', e);
   }

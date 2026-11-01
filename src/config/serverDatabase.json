@@ -19,7 +19,28 @@
       "icon": "Building2"
     }
   ],
-  "transactions": [],
+  "transactions": [
+    {
+      "id": "tx_1793402565306_bzaw2",
+      "date": "2026-10-30",
+      "time": "06:22",
+      "type": "expense",
+      "amount": 100000,
+      "category": "Makanan & Minuman",
+      "accountId": "acc_cash",
+      "description": "jajan"
+    },
+    {
+      "id": "tx_1793402513161_wem6x",
+      "date": "2026-10-30",
+      "time": "06:21",
+      "type": "income",
+      "amount": 1000000,
+      "category": "Gaji Pokok",
+      "accountId": "acc_cash",
+      "description": "-"
+    }
+  ],
   "budgets": [],
-  "updatedAt": 0
+  "updatedAt": 1793539845725
 }

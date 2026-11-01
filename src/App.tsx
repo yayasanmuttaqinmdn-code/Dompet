@@ -28,7 +28,7 @@ import { AccountManagerModal } from './components/AccountManagerModal';
 import { GoogleSheetsModal } from './components/GoogleSheetsModal';
 import {
   getSavedSheetsUrl,
-  saveSheetsUrl,
+  setLocalSheetsUrlOnly,
   isAutoSyncEnabled,
   removeTransactionFromSheets,
   syncAllToGoogleSheets,
@@ -69,13 +69,31 @@ export default function App() {
   // Track timestamp of last local change & latest state refs so background polling never overwrites local edits
   const lastLocalChangeRef = useRef<number>(0);
   const lastServerUpdatedAtRef = useRef<number>(0);
+  const hasAutoSelectedMonthRef = useRef<boolean>(false);
+  const isModalOpenRef = useRef<boolean>(isGoogleSheetsModalOpen);
   const transactionsRef = useRef<Transaction[]>(transactions);
   const accountsRef = useRef<Account[]>(accounts);
   const budgetsRef = useRef<Budget[]>(budgets);
 
   useEffect(() => {
+    isModalOpenRef.current = isGoogleSheetsModalOpen;
+  }, [isGoogleSheetsModalOpen]);
+
+  useEffect(() => {
     transactionsRef.current = transactions;
-  }, [transactions]);
+    // Jika bulan saat ini (mis. 2026-11) belum ada transaksi tetapi ada transaksi di bulan sebelumnya (mis. 2026-10),
+    // otomatis tampilkan bulan terakhir yang memiliki transaksi saat pertama kali dimuat
+    if (!hasAutoSelectedMonthRef.current && transactions.length > 0) {
+      hasAutoSelectedMonthRef.current = true;
+      const hasCurrentMonth = transactions.some((t) => t.date.startsWith(selectedMonth));
+      if (!hasCurrentMonth) {
+        const sortedMonths = Array.from(new Set(transactions.map((t) => t.date.slice(0, 7)))).sort().reverse();
+        if (sortedMonths.length > 0) {
+          setSelectedMonth(sortedMonths[0]);
+        }
+      }
+    }
+  }, [transactions, selectedMonth]);
 
   useEffect(() => {
     accountsRef.current = accounts;
@@ -186,7 +204,8 @@ export default function App() {
 
   // Sinkronisasi Dua Arah Otomatis Antar Perangkat (Server Pusat /api/state + Google Sheets)
   const pullFromSheetsQuietly = useCallback(async () => {
-    // Jangan timpa jika pengguna baru saja mengubah sesuatu di perangkat ini dalam 5 detik terakhir
+    // Jangan jalankan saat pengguna sedang membuka modal pengaturan Google Sheets atau baru saja mengubah data
+    if (isModalOpenRef.current) return;
     if (Date.now() - lastLocalChangeRef.current < 5000) return;
 
     setIsAutoSyncingBg(true);
@@ -196,9 +215,9 @@ export default function App() {
       let activeSheetsUrl = getSavedSheetsUrl();
 
       if (serverState) {
-        // Pastikan URL Spreadsheet Utama dari Server Pusat selalu disamakan ke perangkat ini
+        // Pastikan URL Spreadsheet Utama dari Server Pusat selalu disamakan ke perangkat ini tanpa memicu timpa balik
         if (serverState.sheetsUrl && serverState.sheetsUrl !== activeSheetsUrl) {
-          saveSheetsUrl(serverState.sheetsUrl);
+          setLocalSheetsUrlOnly(serverState.sheetsUrl);
           activeSheetsUrl = serverState.sheetsUrl;
           setIsSheetsConnected(true);
         } else if (activeSheetsUrl) {

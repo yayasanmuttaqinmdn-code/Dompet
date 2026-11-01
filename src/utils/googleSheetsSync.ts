@@ -179,12 +179,20 @@ export function getSavedSheetsUrl(): string {
       }
     }
 
-    const localUrl = localStorage.getItem(KEYS.WEBAPP_URL) || '';
+    const v3Url = localStorage.getItem(KEYS.WEBAPP_URL) || '';
+    const v1Url = localStorage.getItem('dompetku_sheets_webapp_url') || '';
     const envUrl = (import.meta.env?.VITE_GOOGLE_SHEETS_URL as string) || '';
-    // Utamakan Spreadsheet Utama yang sudah dikunci di kode sumber (DEFAULT_SHEETS_WEBAPP_URL) jika localStorage belum disetel manual di v3
-    const activeUrl = localUrl || DEFAULT_SHEETS_WEBAPP_URL || envUrl || '';
 
-    if (!localUrl && activeUrl) {
+    // Jika pengguna baru saja memperbarui skrip di v1Url atau v3Url dan berbeda dari default lama, otomatis jadikan skrip utama!
+    if (v1Url && v1Url.startsWith('https://script.google.com/') && v1Url !== DEFAULT_SHEETS_WEBAPP_URL && !v3Url) {
+      localStorage.setItem(KEYS.WEBAPP_URL, v1Url);
+      persistUrlAsPrimarySpreadsheet(v1Url);
+      return v1Url;
+    }
+
+    const activeUrl = v3Url || DEFAULT_SHEETS_WEBAPP_URL || v1Url || envUrl || '';
+
+    if (!v3Url && activeUrl) {
       localStorage.setItem(KEYS.WEBAPP_URL, activeUrl);
     }
 
@@ -194,10 +202,24 @@ export function getSavedSheetsUrl(): string {
   }
 }
 
+export function setLocalSheetsUrlOnly(url: string): string {
+  try {
+    const { url: cleanUrl } = normalizeSheetsUrl(url);
+    if (cleanUrl) {
+      localStorage.setItem(KEYS.WEBAPP_URL, cleanUrl);
+      localStorage.setItem('dompetku_sheets_webapp_url', cleanUrl);
+    }
+    return cleanUrl;
+  } catch {
+    return url;
+  }
+}
+
 export function saveSheetsUrl(url: string): string {
   try {
     const { url: cleanUrl } = normalizeSheetsUrl(url);
     localStorage.setItem(KEYS.WEBAPP_URL, cleanUrl);
+    localStorage.setItem('dompetku_sheets_webapp_url', cleanUrl);
     // Aktifkan sinkronisasi otomatis secara default saat URL disimpan
     if (localStorage.getItem(KEYS.AUTO_SYNC) === null) {
       localStorage.setItem(KEYS.AUTO_SYNC, 'true');
@@ -303,6 +325,16 @@ function normalizeSheetTransactions(rawList: any[]): Transaction[] {
         }
       }
 
+      let timeStr = String(item.time || '12:00').trim();
+      if (!/^\d{2}:\d{2}$/.test(timeStr)) {
+        const timeMatch = timeStr.match(/(\d{2}:\d{2})/);
+        if (timeMatch) {
+          timeStr = timeMatch[1];
+        } else {
+          timeStr = '12:00';
+        }
+      }
+
       const type = mapTxType(item.type);
       const accountId = mapAccountRef(item.accountId);
       const toAccountId = item.toAccountId ? mapAccountRef(item.toAccountId) : undefined;
@@ -310,7 +342,7 @@ function normalizeSheetTransactions(rawList: any[]): Transaction[] {
       return {
         id,
         date: dateStr,
-        time: String(item.time || '12:00').trim(),
+        time: timeStr,
         type,
         amount: Math.abs(amount),
         category: String(item.category || (type === 'income' ? 'Pemasukan Lainnya' : type === 'transfer' ? 'Transfer' : 'Lain-lain')).trim(),

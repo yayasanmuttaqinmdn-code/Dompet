@@ -457,7 +457,17 @@ function createJsonResponse(obj) {
     setTestResult(null);
     setFixNotification(null);
 
-    const res = await testGoogleSheetsConnection(url.trim());
+    // Langsung kunci URL ke localStorage & Server Pusat seketika saat tombol diklik
+    const immediateCleanUrl = saveSheetsUrl(url.trim());
+    setUrl(immediateCleanUrl);
+    await saveCentralServerState({
+      sheetsUrl: immediateCleanUrl,
+      transactions,
+      accounts,
+      budgets,
+    });
+
+    const res = await testGoogleSheetsConnection(immediateCleanUrl);
     if (res.normalizedUrl) {
       setUrl(res.normalizedUrl);
       saveSheetsUrl(res.normalizedUrl);
@@ -688,7 +698,13 @@ function createJsonResponse(obj) {
                   <input
                     type="url"
                     value={url}
-                    onChange={(e) => setUrl(e.target.value)}
+                    onChange={(e) => {
+                      const nextVal = e.target.value;
+                      setUrl(nextVal);
+                      if (nextVal.trim().startsWith('https://script.google.com/macros/s/')) {
+                        saveSheetsUrl(nextVal.trim());
+                      }
+                    }}
                     placeholder="https://script.google.com/macros/s/.../exec"
                     className="flex-1 px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#024a77] focus:border-transparent placeholder:text-slate-400"
                   />

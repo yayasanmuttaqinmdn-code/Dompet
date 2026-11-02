@@ -28,6 +28,7 @@ import { AccountManagerModal } from './components/AccountManagerModal';
 import { GoogleSheetsModal } from './components/GoogleSheetsModal';
 import {
   getSavedSheetsUrl,
+  getLocalUrlUpdatedAt,
   setLocalSheetsUrlOnly,
   isAutoSyncEnabled,
   removeTransactionFromSheets,
@@ -40,6 +41,7 @@ import {
   fetchCentralServerState,
   saveCentralServerState,
 } from './utils/googleSheetsSync';
+import { DEFAULT_SHEETS_WEBAPP_URL } from './config/defaultSheetsUrl';
 import { RotateCcw, ShieldCheck, Menu, Wifi, CheckCircle2, FileSpreadsheet, Laptop, Smartphone, RefreshCw } from 'lucide-react';
 
 export default function App() {
@@ -140,20 +142,21 @@ export default function App() {
     saveStoredBudgets(budgets);
   }, [budgets]);
 
-  // Helper untuk kirim seluruh state ke Server Pusat (/api/state) & Google Sheets di latar belakang
+  // Helper untuk kirim seluruh state ke Server Pusat (/api/state + Cloud Sync) & Google Sheets di latar belakang
   const pushFullStateToSheets = useCallback(
-    async (nextTx: Transaction[], nextAcc: Account[], nextBg: Budget[]) => {
+    async (nextTx: Transaction[], nextAcc: Account[], nextBg: Budget[], deletedId?: string) => {
       lastLocalChangeRef.current = Date.now();
       const sheetsUrl = getSavedSheetsUrl();
       setIsAutoSyncingBg(true);
       try {
-        // 1. Selalu simpan ke Server Pusat (/api/state) agar semua perangkat langsung memiliki data yang sama
+        // 1. Selalu simpan ke Server Pusat & Cloud Sync agar semua perangkat langsung memiliki data yang sama
         const savedServer = await saveCentralServerState({
           sheetsUrl: sheetsUrl || undefined,
           transactions: nextTx,
           accounts: nextAcc,
           budgets: nextBg,
-          forceEmpty: nextTx.length === 0,
+          deletedId,
+          forceEmpty: nextTx.length === 0 && !deletedId,
         });
         if (savedServer && savedServer.updatedAt) {
           lastServerUpdatedAtRef.current = savedServer.updatedAt;
@@ -202,7 +205,7 @@ export default function App() {
     []
   );
 
-  // Sinkronisasi Dua Arah Otomatis Antar Perangkat (Server Pusat /api/state + Google Sheets)
+  // Sinkronisasi Dua Arah Otomatis Antar Perangkat (Server Pusat / Cloud Sync + Google Sheets)
   const pullFromSheetsQuietly = useCallback(async () => {
     // Jangan jalankan saat pengguna sedang membuka modal pengaturan Google Sheets atau baru saja mengubah data
     if (isModalOpenRef.current) return;
@@ -210,14 +213,29 @@ export default function App() {
 
     setIsAutoSyncingBg(true);
     try {
-      // TAHAP 1: Cek Server Pusat (/api/state) agar semua perangkat (HP/Laptop) otomatis menggunakan 1 Spreadsheet Utama & data yang sama
+      // TAHAP 1: Cek Server Pusat & Cloud Sync agar semua perangkat (HP/Laptop, AI Studio & Vercel) menggunakan 1 Spreadsheet Utama & data yang sama
       const serverState = await fetchCentralServerState();
       let activeSheetsUrl = getSavedSheetsUrl();
+      const localUrlUpdated = getLocalUrlUpdatedAt();
 
       if (serverState) {
-        // Pastikan URL Spreadsheet Utama dari Server Pusat selalu disamakan ke perangkat ini tanpa memicu timpa balik
-        if (serverState.sheetsUrl && serverState.sheetsUrl !== activeSheetsUrl) {
-          setLocalSheetsUrlOnly(serverState.sheetsUrl);
+        const serverUrlUpdated = serverState.sheetsUrlUpdatedAt || 0;
+
+        // Jika perangkat ini memiliki URL Google Apps Script baru yang dimasukkan pengguna, unggah ke Server Pusat
+        if (
+          activeSheetsUrl &&
+          activeSheetsUrl.startsWith('https://script.google.com/') &&
+          activeSheetsUrl !== serverState.sheetsUrl &&
+          (localUrlUpdated > serverUrlUpdated || (serverUrlUpdated === 0 && activeSheetsUrl !== DEFAULT_SHEETS_WEBAPP_URL))
+        ) {
+          await saveCentralServerState({
+            sheetsUrl: activeSheetsUrl,
+            sheetsUrlUpdatedAt: Date.now(),
+          });
+          setIsSheetsConnected(true);
+        } else if (serverState.sheetsUrl && serverState.sheetsUrl !== activeSheetsUrl) {
+          // Samakan URL perangkat ini dengan Spreadsheet Utama dari Server Pusat
+          setLocalSheetsUrlOnly(serverState.sheetsUrl, serverUrlUpdated);
           activeSheetsUrl = serverState.sheetsUrl;
           setIsSheetsConnected(true);
         } else if (activeSheetsUrl) {
@@ -225,29 +243,45 @@ export default function App() {
         }
 
         const serverTxs = serverState.transactions || [];
+        const deletedSet = new Set<string>(serverState.deletedIds || []);
+        const lastResetAt = serverState.lastResetAt || 0;
         const localTxs = transactionsRef.current;
 
-        // Jika Server Pusat belum punya transaksi tetapi perangkat ini punya transaksi, unggah ke Server Pusat & Google Sheets!
-        if (serverState.updatedAt === 0 && localTxs.length > 0) {
+        // Cek apakah perangkat ini punya transaksi baru buatan pengguna (tx_17...) yang belum masuk ke Server Pusat
+        const serverTxIds = new Set(serverTxs.map((t) => t.id));
+        const unuploadedLocalTxs = localTxs.filter((t) => {
+          if (!t.id || !t.id.startsWith('tx_17')) return false;
+          if (serverTxIds.has(t.id) || deletedSet.has(t.id)) return false;
+          const txTs = parseInt(t.id.split('_')[1] || '0', 10) || 0;
+          return txTs > lastResetAt;
+        });
+
+        if (unuploadedLocalTxs.length > 0) {
+          const mergedTxs = [
+            ...unuploadedLocalTxs,
+            ...serverTxs.filter((t) => !deletedSet.has(t.id)),
+          ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+          handleUpdateFromSheets(mergedTxs, serverState.accounts, serverState.budgets);
           const uploaded = await saveCentralServerState({
             sheetsUrl: activeSheetsUrl || undefined,
-            transactions: localTxs,
-            accounts: accountsRef.current,
-            budgets: budgetsRef.current,
+            transactions: mergedTxs,
+            accounts: serverState.accounts || accountsRef.current,
+            budgets: serverState.budgets || budgetsRef.current,
           });
           if (uploaded?.updatedAt) {
             lastServerUpdatedAtRef.current = uploaded.updatedAt;
           }
           if (activeSheetsUrl && isAutoSyncEnabled()) {
             await syncAllToGoogleSheets(activeSheetsUrl, {
-              transactions: localTxs,
-              accounts: accountsRef.current,
-              budgets: budgetsRef.current,
+              transactions: mergedTxs,
+              accounts: serverState.accounts || accountsRef.current,
+              budgets: serverState.budgets || budgetsRef.current,
             });
           }
         } else if (
           serverState.updatedAt > 0 &&
-          serverState.updatedAt > lastServerUpdatedAtRef.current &&
+          (serverState.updatedAt > lastServerUpdatedAtRef.current || JSON.stringify(localTxs) !== JSON.stringify(serverTxs)) &&
           Date.now() - lastLocalChangeRef.current >= 5000
         ) {
           lastServerUpdatedAtRef.current = serverState.updatedAt;
@@ -255,7 +289,7 @@ export default function App() {
         }
       }
 
-      // TAHAP 2: Sinkronisasi dengan Google Sheets
+      // TAHAP 2: Sinkronisasi langsung dengan Google Sheets (apabila skrip mendukung getData dua arah)
       if (!activeSheetsUrl || !isAutoSyncEnabled()) return;
 
       if (hasPendingPush()) {
@@ -269,7 +303,7 @@ export default function App() {
       }
 
       const res = await fetchDataFromGoogleSheets(activeSheetsUrl);
-      if (res.success && Date.now() - lastLocalChangeRef.current >= 5000) {
+      if (res.success && res.fromSheetDirect && Date.now() - lastLocalChangeRef.current >= 5000) {
         const sheetTxs = res.transactions || [];
         const localTxs = transactionsRef.current;
 
@@ -279,10 +313,10 @@ export default function App() {
             accounts: accountsRef.current,
             budgets: budgetsRef.current,
           });
-        } else if (sheetTxs.length > 0 || localTxs.length === 0) {
+        } else if (sheetTxs.length > 0) {
           const changed = JSON.stringify(localTxs) !== JSON.stringify(sheetTxs);
           handleUpdateFromSheets(sheetTxs, res.accounts, res.budgets);
-          if (changed && sheetTxs.length > 0) {
+          if (changed) {
             const saved = await saveCentralServerState({
               sheetsUrl: activeSheetsUrl,
               transactions: sheetTxs,
@@ -295,12 +329,6 @@ export default function App() {
           }
         }
         setIsSheetsConnected(true);
-      } else if (!res.success && transactionsRef.current.length > 0 && getLastSyncedTxCount() !== transactionsRef.current.length) {
-        await syncAllToGoogleSheets(activeSheetsUrl, {
-          transactions: transactionsRef.current,
-          accounts: accountsRef.current,
-          budgets: budgetsRef.current,
-        });
       }
     } catch {
       // silent background check
@@ -401,12 +429,12 @@ export default function App() {
     setTransactions(nextTransactions);
     saveStoredTransactions(nextTransactions);
 
-    // Otomatis perbarui Google Sheets (baik via syncAll maupun deleteTransaction)
+    // Otomatis perbarui Server Pusat, Cloud Sync, dan Google Sheets
     const sheetsUrl = getSavedSheetsUrl();
     if (sheetsUrl && isAutoSyncEnabled()) {
       removeTransactionFromSheets(sheetsUrl, id);
-      pushFullStateToSheets(nextTransactions, accounts, budgets);
     }
+    pushFullStateToSheets(nextTransactions, accounts, budgets, id);
   };
 
   const handleEditTransaction = (tx: Transaction) => {

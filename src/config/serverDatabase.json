@@ -1,5 +1,6 @@
 {
   "sheetsUrl": "https://script.google.com/macros/s/AKfycbwOx_f2K6knBpth1X1GHjgh1ewn6eUl3OS2Gm7cl8R_VwcdvChBp7z7jIl8wFwMeGOypg/exec",
+  "sheetsUrlUpdatedAt": 0,
   "accounts": [
     {
       "id": "acc_cash",
@@ -42,5 +43,7 @@
     }
   ],
   "budgets": [],
-  "updatedAt": 1793539845725
+  "deletedIds": [],
+  "lastResetAt": 0,
+  "updatedAt": 1793659717006
 }

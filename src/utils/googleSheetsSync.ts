@@ -3,29 +3,59 @@ import { DEFAULT_SHEETS_WEBAPP_URL } from '../config/defaultSheetsUrl';
 
 const KEYS = {
   WEBAPP_URL: 'dompetku_sheets_webapp_url_v3',
+  URL_UPDATED_AT: 'dompetku_sheets_url_updated_at',
   AUTO_SYNC: 'dompetku_sheets_auto_sync_v2',
   LAST_SYNC: 'dompetku_sheets_last_sync',
   PENDING_PUSH: 'dompetku_sheets_pending_push',
   LAST_SYNCED_COUNT: 'dompetku_sheets_last_tx_count',
 };
 
+const CLOUD_SYNC_OBJECT_URL = 'https://api.restful-api.dev/objects/ff808181a09d98f701a19e72a5ff14ac';
+let cachedCloudState: CentralServerState | null = null;
+let lastDirectCloudFetchAt = 0;
+
+export function getLocalUrlUpdatedAt(): number {
+  try {
+    return parseInt(localStorage.getItem(KEYS.URL_UPDATED_AT) || '0', 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function setLocalUrlUpdatedAt(ts: number): void {
+  try {
+    localStorage.setItem(KEYS.URL_UPDATED_AT, String(ts));
+  } catch {
+    // ignore
+  }
+}
+
 /**
- * Menyimpan URL ke file konfigurasi proyek (src/config/defaultSheetsUrl.ts)
+ * Menyimpan URL ke Server Pusat & Cloud Sync
  * sehingga ketika aplikasi dibuka di perangkat lain (HP/Laptop lain atau Vercel),
  * link spreadsheet utama langsung terhubung tanpa perlu dimasukkan ulang.
  */
 export async function persistUrlAsPrimarySpreadsheet(cleanUrl: string): Promise<boolean> {
   if (!cleanUrl || !cleanUrl.startsWith('https://script.google.com/')) return false;
+  const now = Date.now();
+  setLocalUrlUpdatedAt(now);
   try {
     const res = await fetch('/api/set-default-sheets-url', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: cleanUrl }),
     });
-    return res.ok;
+    if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+      return true;
+    }
   } catch {
-    return false;
+    // fallback to cloud below
   }
+  const saved = await saveCentralServerState({
+    sheetsUrl: cleanUrl,
+    sheetsUrlUpdatedAt: now,
+  });
+  return !!saved;
 }
 
 export function hasPendingPush(): boolean {
@@ -119,48 +149,155 @@ export function normalizeSheetsUrl(rawUrl: string): {
 
 export interface CentralServerState {
   sheetsUrl: string;
+  sheetsUrlUpdatedAt?: number;
   accounts: Account[];
   transactions: Transaction[];
   budgets: Budget[];
+  deletedIds?: string[];
+  lastResetAt?: number;
   updatedAt: number;
 }
 
+async function fetchDirectCloudState(force = false): Promise<CentralServerState | null> {
+  if (!force && cachedCloudState && Date.now() - lastDirectCloudFetchAt < 12000) {
+    return cachedCloudState;
+  }
+  try {
+    const res = await fetch(CLOUD_SYNC_OBJECT_URL);
+    if (!res.ok) return cachedCloudState;
+    const obj = await res.json();
+    const rawJson = obj?.data?.stateJson;
+    if (rawJson && typeof rawJson === 'string') {
+      const parsed = JSON.parse(rawJson) as CentralServerState;
+      if (parsed && typeof parsed === 'object') {
+        cachedCloudState = parsed;
+        lastDirectCloudFetchAt = Date.now();
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return cachedCloudState;
+}
+
+async function pushDirectCloudState(nextState: CentralServerState): Promise<CentralServerState> {
+  cachedCloudState = nextState;
+  lastDirectCloudFetchAt = Date.now();
+  try {
+    await fetch(CLOUD_SYNC_OBJECT_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'dompetku_fahmi',
+        data: {
+          stateJson: JSON.stringify(nextState),
+          updatedAt: nextState.updatedAt,
+        },
+      }),
+    });
+  } catch {
+    // ignore
+  }
+  return nextState;
+}
+
 export async function fetchCentralServerState(): Promise<CentralServerState | null> {
+  let apiState: CentralServerState | null = null;
   try {
     const res = await fetch(`/api/state?_t=${Date.now()}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data && data.ok && data.state) {
-      return data.state as CentralServerState;
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
+      const data = await res.json();
+      if (data && data.ok && data.state) {
+        apiState = data.state as CentralServerState;
+      }
     }
-    return null;
   } catch {
-    return null;
+    // fallback to direct cloud state below
   }
+
+  const cloudState = await fetchDirectCloudState(!apiState);
+  if (apiState && cloudState) {
+    return (cloudState.updatedAt || 0) > (apiState.updatedAt || 0) ? cloudState : apiState;
+  }
+  return apiState || cloudState;
 }
 
 export async function saveCentralServerState(payload: {
   sheetsUrl?: string;
+  sheetsUrlUpdatedAt?: number;
   accounts?: Account[];
   transactions?: Transaction[];
   budgets?: Budget[];
+  deletedId?: string;
+  deletedIds?: string[];
   forceEmpty?: boolean;
 }): Promise<CentralServerState | null> {
+  let apiState: CentralServerState | null = null;
   try {
     const res = await fetch('/api/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data && data.ok && data.state) {
-      return data.state as CentralServerState;
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
+      const data = await res.json();
+      if (data && data.ok && data.state) {
+        apiState = data.state as CentralServerState;
+        cachedCloudState = apiState;
+        lastDirectCloudFetchAt = Date.now();
+        return apiState;
+      }
     }
-    return null;
   } catch {
-    return null;
+    // fallback to direct cloud state below
   }
+
+  // Fallback langsung ke Cloud Sync jika dibuka dari static host (mis. Vercel sebelum fungsi /api aktif)
+  const current = (await fetchDirectCloudState(true)) || {
+    sheetsUrl: DEFAULT_SHEETS_WEBAPP_URL,
+    sheetsUrlUpdatedAt: 0,
+    accounts: [],
+    transactions: [],
+    budgets: [],
+    deletedIds: [],
+    lastResetAt: 0,
+    updatedAt: 0,
+  };
+
+  const now = Date.now();
+  const forceEmpty = payload.forceEmpty === true;
+  const deletedSet = new Set<string>(Array.isArray(current.deletedIds) ? current.deletedIds : []);
+  if (Array.isArray(payload.deletedIds)) {
+    for (const id of payload.deletedIds) deletedSet.add(id);
+  }
+  if (payload.deletedId) {
+    deletedSet.add(payload.deletedId);
+  }
+
+  const nextSheetsUrl =
+    payload.sheetsUrl && payload.sheetsUrl.trim().startsWith('https://script.google.com/')
+      ? payload.sheetsUrl.trim()
+      : current.sheetsUrl || DEFAULT_SHEETS_WEBAPP_URL;
+
+  const urlChanged = nextSheetsUrl !== current.sheetsUrl || typeof payload.sheetsUrlUpdatedAt === 'number';
+  const nextState: CentralServerState = {
+    sheetsUrl: nextSheetsUrl,
+    sheetsUrlUpdatedAt: urlChanged ? (payload.sheetsUrlUpdatedAt || now) : (current.sheetsUrlUpdatedAt || 0),
+    accounts: payload.accounts || current.accounts,
+    transactions:
+      payload.transactions !== undefined && (payload.transactions.length > 0 || forceEmpty)
+        ? payload.transactions
+        : current.transactions,
+    budgets: payload.budgets || current.budgets,
+    deletedIds: Array.from(deletedSet),
+    lastResetAt: forceEmpty ? now : (current.lastResetAt || 0),
+    updatedAt: now,
+  };
+
+  return await pushDirectCloudState(nextState);
 }
 
 export function getSavedSheetsUrl(): string {
@@ -172,6 +309,7 @@ export function getSavedSheetsUrl(): string {
       if (urlParam && urlParam.startsWith('https://script.google.com/')) {
         const { url: cleanParamUrl } = normalizeSheetsUrl(urlParam);
         localStorage.setItem(KEYS.WEBAPP_URL, cleanParamUrl);
+        setLocalUrlUpdatedAt(Date.now());
         params.delete('sheets');
         const newSearch = params.toString();
         const nextHref = `${window.location.pathname}${newSearch ? `?${newSearch}` : ''}${window.location.hash}`;
@@ -183,7 +321,7 @@ export function getSavedSheetsUrl(): string {
     const v1Url = localStorage.getItem('dompetku_sheets_webapp_url') || '';
     const envUrl = (import.meta.env?.VITE_GOOGLE_SHEETS_URL as string) || '';
 
-    // Jika pengguna baru saja memperbarui skrip di v1Url atau v3Url dan berbeda dari default lama, otomatis jadikan skrip utama!
+    // Jika pengguna baru saja memperbarui skrip di v1Url dan berbeda dari default lama, otomatis jadikan skrip utama!
     if (v1Url && v1Url.startsWith('https://script.google.com/') && v1Url !== DEFAULT_SHEETS_WEBAPP_URL && !v3Url) {
       localStorage.setItem(KEYS.WEBAPP_URL, v1Url);
       persistUrlAsPrimarySpreadsheet(v1Url);
@@ -202,12 +340,15 @@ export function getSavedSheetsUrl(): string {
   }
 }
 
-export function setLocalSheetsUrlOnly(url: string): string {
+export function setLocalSheetsUrlOnly(url: string, updatedAt?: number): string {
   try {
     const { url: cleanUrl } = normalizeSheetsUrl(url);
     if (cleanUrl) {
       localStorage.setItem(KEYS.WEBAPP_URL, cleanUrl);
       localStorage.setItem('dompetku_sheets_webapp_url', cleanUrl);
+      if (typeof updatedAt === 'number' && updatedAt > 0) {
+        setLocalUrlUpdatedAt(updatedAt);
+      }
     }
     return cleanUrl;
   } catch {
@@ -220,6 +361,7 @@ export function saveSheetsUrl(url: string): string {
     const { url: cleanUrl } = normalizeSheetsUrl(url);
     localStorage.setItem(KEYS.WEBAPP_URL, cleanUrl);
     localStorage.setItem('dompetku_sheets_webapp_url', cleanUrl);
+    setLocalUrlUpdatedAt(Date.now());
     // Aktifkan sinkronisasi otomatis secara default saat URL disimpan
     if (localStorage.getItem(KEYS.AUTO_SYNC) === null) {
       localStorage.setItem(KEYS.AUTO_SYNC, 'true');
@@ -694,6 +836,7 @@ export async function fetchDataFromGoogleSheets(
 ): Promise<{
   success: boolean;
   message: string;
+  fromSheetDirect?: boolean;
   transactions?: Transaction[];
   accounts?: Account[];
   budgets?: Budget[];
@@ -722,6 +865,7 @@ export async function fetchDataFromGoogleSheets(
         const normalizedAccs = normalizeSheetAccounts(result.data.accounts || []);
         return {
           success: true,
+          fromSheetDirect: true,
           message: `Berhasil menyinkronkan ${normalizedTxs.length} transaksi dari Google Sheets!`,
           transactions: normalizedTxs,
           accounts: normalizedAccs,
@@ -752,6 +896,7 @@ export async function fetchDataFromGoogleSheets(
         const normalizedAccs = normalizeSheetAccounts(resultPost.data.accounts || []);
         return {
           success: true,
+          fromSheetDirect: true,
           message: `Berhasil menyinkronkan ${normalizedTxs.length} transaksi dari Google Sheets!`,
           transactions: normalizedTxs,
           accounts: normalizedAccs,
@@ -764,13 +909,14 @@ export async function fetchDataFromGoogleSheets(
   }
 
   // Percobaan 3: Jika skrip Google Apps Script yang terpasang masih versi awal (belum memiliki aksi getData),
-  // otomatis tarik data terbaru dari Server Pusat (/api/state) agar antar perangkat tetap 100% sinkron!
+  // otomatis tarik data terbaru dari Server Pusat & Cloud Sync agar antar perangkat tetap 100% sinkron!
   try {
     const serverState = await fetchCentralServerState();
     if (serverState && Array.isArray(serverState.transactions)) {
       setLastSyncTime();
       return {
         success: true,
+        fromSheetDirect: false,
         message: `Berhasil menyinkronkan ${serverState.transactions.length} transaksi dari Server Pusat & Spreadsheet Utama!`,
         transactions: serverState.transactions,
         accounts: serverState.accounts,
